@@ -1,0 +1,2 @@
+LeGO-LOAM/LeGO-LOAM:LeGO-LOAM/cloud_msgs
+-DCATKIN_DEVEL_PREFIX=/home/cameron/projects/wriva/bag2opk/lego-loam/devel -DCMAKE_INSTALL_PREFIX=/home/cameron/projects/wriva/bag2opk/lego-loam/install -G Unix Makefiles

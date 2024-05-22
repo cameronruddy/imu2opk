@@ -1,0 +1,8 @@
+prefix=/home/cameron/projects/wriva/bag2opk/lego-loam/devel
+
+Name: cloud_msgs
+Description: Description of cloud_msgs
+Version: 1.0.0
+Cflags: -I/home/cameron/projects/wriva/bag2opk/lego-loam/devel/include
+Libs: -L${prefix}/lib 
+Requires: message_runtime message_generation geometry_msgs std_msgs nav_msgs
