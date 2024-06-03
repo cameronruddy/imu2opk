@@ -4,3 +4,6 @@ raw-imu-solution/
 raw_imu_solution/
 __pycache__/
 archive/
+rpy_opk/__pycache__/
+rpy_opk/README.md
+rpy_opk/old_opk.py
