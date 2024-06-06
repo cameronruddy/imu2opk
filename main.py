@@ -10,6 +10,10 @@ from rpy_opk.get_opk import rpy2opk_write
 import color_scheme as clr
 import csv
 import argparse
+import math
+import pandas as pd
+import matplotlib.pyplot as plt
+
 
 import rosbag
 
@@ -22,6 +26,7 @@ DEFAULT_OPK_BASE_DIR = "./opk-solution"
 DEFAULT_GPS_FIELDS = ["Measurement_DateTime", "GPS_lat", "GPS_lon", "GPS_alt"]
 DEFAULT_RPY_FIELDS = ["t", "roll", "pitch", "yaw"]
 DEFAULT_RAW_IMU_DIR = "./raw-imu-solution"
+DEFAULT_CAL_DIR = "./imu-calibration"
 TIME_TOLERANCE = 1.0
 
 def handle_input(path, extension, *args):
@@ -183,6 +188,9 @@ def rpy_solution(bag_files, bag_dirs):
     # Return list of files created during this session
     return session_files
 
+def rad2deg(value_r):
+    return value_r * 180 / math.pi
+
 def imu2csv(bag_paths, verbose):
     
     # Check if output directory exists
@@ -193,18 +201,29 @@ def imu2csv(bag_paths, verbose):
     outpath = generate_filename(DEFAULT_RAW_IMU_DIR)
     with open(outpath, 'w') as outfilehandle:
         outfilehandle.write("t,roll,pitch,yaw\n")
-        # s_ is for summed, i.e. summed roll
-        s_roll = 0.0
-        s_pitch = 0.0
-        s_yaw = 0.0
+        # s_ is for summed, i.e. s_roll = summed roll
+        last_dir = ""
         for current_path in bag_paths:
+            this_dir = os.path.dirname(current_path)
+            if this_dir != last_dir:
+                s_roll = 0.0
+                s_pitch = 0.0
+                s_yaw = 0.0
+                last_dir = this_dir
+
             with rosbag.Bag(current_path, 'r') as open_bag:
                 for topic, msg, t in open_bag.read_messages("/imu/data"):
                     t = t.to_sec()
+                    """
+                    s_roll = (s_roll + rad2deg(msg.angular_velocity.x)) % 360
+                    s_pitch = (s_pitch + rad2deg(msg.angular_velocity.y)) % 360
+                    s_yaw = (s_yaw + rad2deg(msg.angular_velocity.z)) % 360
+                    """
+                    s_roll = (s_roll + math.degrees(msg.angular_velocity.x)) % 360
+                    s_pitch = (s_pitch + math.degrees(msg.angular_velocity.y)) % 360
+                    s_yaw = (s_yaw + math.degrees(msg.angular_velocity.z)) % 360
 
-                    s_roll = (s_roll + msg.angular_velocity.x) % 360
-                    s_pitch = (s_pitch + msg.angular_velocity.y) % 360
-                    s_yaw = (s_yaw + msg.angular_velocity.z) % 360
+
                     outfilehandle.write("{},{},{},{}\n".format(
                         t,
                         s_roll,
@@ -216,11 +235,108 @@ def imu2csv(bag_paths, verbose):
                         t, s_roll, s_pitch, s_yaw
                     ))
 
+    return [outpath] # Formatted as a list to play nice with downstream stuff
+
+def imucal2rpy(bag_paths, cal_path, verbose):
+    
+    # Check if output directory exists
+    if not os.path.isdir(DEFAULT_RAW_IMU_DIR):
+        os.makedirs(DEFAULT_RAW_IMU_DIR)    
+    
+    # Get cal values
+    calibration_data = pd.read_csv(cal_path[0])
+    roll_cal = math.degrees(calibration_data.roll_cal.values[0])
+    pitch_cal = math.degrees(calibration_data.pitch_cal.values[0])
+    yaw_cal = math.degrees(calibration_data.yaw_cal.values[0])
+
+    # Make an output file
+    outpath = generate_filename(DEFAULT_RAW_IMU_DIR)
+    with open(outpath, 'w') as outfilehandle:
+        outfilehandle.write("t,roll,pitch,yaw\n")
+        # s_ is for summed, i.e. s_roll = summed roll
+        last_dir = ""
+        for current_path in bag_paths:
+            this_dir = os.path.dirname(current_path)
+            if this_dir != last_dir:
+                s_roll = 0.0
+                s_pitch = 0.0
+                s_yaw = 0.0
+                last_dir = this_dir
+
+            with rosbag.Bag(current_path, 'r') as open_bag:
+                for topic, msg, t in open_bag.read_messages("/imu/data"):
+                    t = t.to_sec()
+                    s_roll = ((s_roll + math.degrees(msg.angular_velocity.x)) - roll_cal)  % 360
+                    s_pitch = ((s_pitch + math.degrees(msg.angular_velocity.y)) - pitch_cal) % 360
+                    s_yaw = ((s_yaw + math.degrees(msg.angular_velocity.z)) - yaw_cal) % 360
+
+
+                    outfilehandle.write("{},{},{},{}\n".format(
+                        t,
+                        s_roll,
+                        s_pitch,
+                        s_yaw
+                    ))
+                if verbose:
+                    print("Wrote:\nt: {}\nroll: {}\npitch: {}\nyaw: {}".format(
+                        t, s_roll, s_pitch, s_yaw
+                    ))
 
     return [outpath] # Formatted as a list to play nice with downstream stuff
 
+
+def generate_calibration(bag_paths, verbose):
+# Generate calibration values for IMU in rad/sec
+
+    # Check if output directory exists
+    if not os.path.isdir(DEFAULT_CAL_DIR):
+        os.makedirs(DEFAULT_CAL_DIR)    
+    
+    # Make an output file
+    outpath = generate_filename(DEFAULT_CAL_DIR)
+    with open(outpath, 'w') as outfilehandle:
+        outfilehandle.write("roll_cal,pitch_cal,yaw_cal\n")
+        # a_ is for averaged, i.e. a_roll_err = average roll error
+        last_dir = ""
+        for current_path in bag_paths:
+            this_dir = os.path.dirname(current_path)
+            if this_dir != last_dir:
+                a_roll_err = 0.0
+                a_pitch_err = 0.0
+                a_yaw_err = 0.0
+                msg_idx = 1
+                last_dir = this_dir
+
+            with rosbag.Bag(current_path, 'r') as open_bag:
+                for topic, msg, t in open_bag.read_messages("/imu/data"):
+                    a_roll_err = (a_roll_err + msg.angular_velocity.x)
+                    a_pitch_err = (a_pitch_err + msg.angular_velocity.y)
+                    a_yaw_err = (a_yaw_err + msg.angular_velocity.z) 
+                
+                    if verbose:
+                        print("roll_cal: {}, pitch_cal: {}, yaw_cal: {}, msg_idx: {}".format(
+                            a_roll_err,
+                            a_pitch_err,
+                            a_yaw_err,
+                            msg_idx
+                        ), end="")
+
+                    msg_idx += 1
+
+            a_roll_err = a_roll_err / msg_idx
+            a_pitch_err = a_pitch_err / msg_idx
+            a_yaw_err = a_yaw_err / msg_idx
+
+            outfilehandle.write("{},{},{}\n".format(
+                a_roll_err,
+                a_pitch_err,
+                a_yaw_err
+            ))
+    
+
 def concatinate_csv(csv_files, fields):
     ## Takes all csv files and concatinates their contents into a single list
+
     csv_data = []
     for csv_path in csv_files:
         with open(csv_path, 'r') as csvfile:
@@ -246,7 +362,15 @@ def solve_opk(rpy_paths, gps_paths, outfile):
     print("{}{}{} matches were found".format(
         clr.SUCCESS, opk_solution, clr.RESET
     ))
+
+def make_plot(path):
+    data = pd.read_csv(path[0]) # Indexing tomfoolery
+    #data.yaw.plot()
+    data.pitch.plot()
+    data.roll.plot()
+    plt.show()
     
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         prog="Rosbag to OPK angle calulator",
@@ -302,11 +426,28 @@ if __name__ == "__main__":
                         "--verbose",
                         help="Enable extra output messages",
                         action="store_true")
+    
+    parser.add_argument("-p",
+                        "--plot",
+                        help="Plot output",
+                        action="store_true")
+
+    parser.add_argument("-c",
+                        "--calibrate",
+                        help="Generate calibration values for IMU readings",
+                        action="store_true")
+    
+    parser.add_argument("-I",
+                        "--imu_calibrated",
+                        help="Compute IMU readings with provided calibration files",
+                        metavar="",
+                        action="store")
 
     args = parser.parse_args()
 
     # Handle output first before it becomes a problem later, after everything's run already
     # Better to have an error now lol
+
     if args.fullrun or args.angles:
         outfile = handle_output(args.outfile, DEFAULT_OPK_BASE_DIR)
 
@@ -326,3 +467,16 @@ if __name__ == "__main__":
     if args.fullrun or args.angles:
         gps_files, gps_dirs = handle_input(args.gps, ".csv", "No gps file provided")
         solve_opk(rpy_files, gps_files, outfile)
+
+    if args.plot:
+        csv_files, csv_dirs = handle_input(args.input, ".csv")
+        make_plot(csv_files)
+
+    if args.calibrate:
+        bag_files, bag_dirs = handle_input(args.input, ".bag")
+        generate_calibration(bag_files, args.verbose)
+
+    if args.imu_calibrated:
+        bag_files, bag_dirs = handle_input(args.input, ".bag")
+        cal_file, cal_dir = handle_input(args.imu_calibrated, ".csv")
+        imucal2rpy(bag_files, cal_file, args.verbose)
